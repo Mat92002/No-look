@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>NO LOOK — Prototype</title>
+<style>
+*{box-sizing:border-box;-webkit-user-select:none;user-select:none}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;font-family:Arial,sans-serif;color:#eee;touch-action:none}
+#game{position:fixed;inset:0;width:100%;height:100%;display:block;background:#050505}
+#hud{position:fixed;inset:0;pointer-events:none}
+#timer{position:absolute;top:max(14px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);font-size:18px;letter-spacing:3px;text-shadow:0 2px 8px #000}
+#msg{position:absolute;top:13%;left:50%;transform:translateX(-50%);width:90%;text-align:center;font-size:20px;text-shadow:0 2px 8px #000;opacity:0;transition:opacity .3s}
+#eyes{position:absolute;right:18px;bottom:max(24px,env(safe-area-inset-bottom));width:86px;height:86px;border:1px solid #aaa;border-radius:50%;background:rgba(10,10,10,.72);color:white;font-weight:bold;pointer-events:auto}
+#joystick{position:absolute;left:22px;bottom:max(25px,env(safe-area-inset-bottom));width:130px;height:130px;border:1px solid #777;border-radius:50%;background:rgba(20,20,20,.35);pointer-events:auto}
+#stick{position:absolute;width:54px;height:54px;border-radius:50%;background:rgba(210,210,210,.25);border:1px solid #aaa;left:38px;top:38px}
+#lookHint{position:absolute;right:112px;bottom:42px;color:#aaa;font-size:11px;opacity:.65}
+.overlay{position:fixed;inset:0;background:radial-gradient(circle,#151515,#020202 70%);display:flex;align-items:center;justify-content:center;z-index:10;padding:24px}
+.panel{width:min(420px,92vw);text-align:center}
+h1{font-size:42px;letter-spacing:9px;margin:0 0 10px}
+p{color:#aaa;line-height:1.5}
+input{width:100%;padding:15px;border:1px solid #555;background:#111;color:#fff;border-radius:8px;font-size:18px;text-align:center;margin:14px 0}
+button.start{width:100%;padding:15px;border:0;border-radius:8px;background:#ddd;color:#111;font-weight:bold;font-size:16px}
+.small{font-size:12px;color:#666;margin-top:15px}
+#black{position:fixed;inset:0;background:#000;z-index:8;display:none}
+#death{display:none}
+#death h2{font-size:30px;letter-spacing:4px}
+#death button{margin-top:12px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="black"></div>
+
+<div id="hud">
+  <div id="timer">10:00</div>
+  <div id="msg"></div>
+  <div id="lookHint">GLISSE À DROITE POUR REGARDER</div>
+  <div id="joystick"><div id="stick"></div></div>
+  <button id="eyes">YEUX<br>FERMÉS</button>
+</div>
+
+<div id="start" class="overlay">
+ <div class="panel">
+  <h1>NO LOOK</h1>
+  <p>Entre ton prénom.<br>La pièce est calme. Pour l'instant.</p>
+  <input id="name" maxlength="18" placeholder="Ton prénom">
+  <button class="start" id="startBtn">ENTRER</button>
+  <div class="small">Prototype jouable — déplacement tactile + caméra + son</div>
+ </div>
+</div>
+
+<div id="death" class="overlay">
+ <div class="panel">
+  <h2>IL T'A TROUVÉ</h2>
+  <p id="deathText">Tu as regardé.</p>
+  <button class="start" id="restart">RECOMMENCER</button>
+ </div>
+</div>
+
+<script>
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+let W=innerWidth,H=innerHeight,dpr=Math.min(devicePixelRatio||1,2);
+function resize(){W=innerWidth;H=innerHeight;canvas.width=W*dpr;canvas.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener('resize',resize);resize();
+
+const map=[
+"################",
+"#..............#",
+"#..####........#",
+"#..#..#........#",
+"#..#..#..#####.#",
+"#.....#........#",
+"#..............#",
+"#..####........#",
+"#........#.....#",
+"#........#.....#",
+"#........#.....#",
+"#........#.....#",
+"#..............#",
+"#......#####...#",
+"#..............#",
+"################"
+];
+const MW=16,MH=16;
+let p={x:2.5,y:2.5,a:0}, creature={x:12.5,y:13.5};
+let running=false,dead=false,eyes=false,name="",startTime=0,last=0;
+let duration=600;
+let joystick={active:false,id:null,x:0,y:0};
+let look={active:false,id:null,lastX:0};
+let audio=null;
+
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function norm(a){while(a>Math.PI)a-=Math.PI*2;while(a<-Math.PI)a+=Math.PI*2;return a}
+function wall(x,y){let xi=Math.floor(x),yi=Math.floor(y);return xi<0||yi<0||xi>=MW||yi>=MH||map[yi][xi]==="#"}
+function move(dx,dy){
+ let nx=p.x+dx,ny=p.y+dy;
+ if(!wall(nx,p.y))p.x=nx;
+ if(!wall(p.x,ny))p.y=ny;
+}
+function say(t,ms=2600){const el=document.getElementById('msg');el.textContent=t;el.style.opacity=1;clearTimeout(say.to);say.to=setTimeout(()=>el.style.opacity=0,ms)}
+function format(s){let m=Math.floor(s/60),sec=Math.floor(s%60);return String(m).padStart(2,'0')+":"+String(sec).padStart(2,'0')}
+
+function initAudio(){
+ if(audio)return;
+ const AC=window.AudioContext||window.webkitAudioContext;
+ if(!AC)return;
+ audio={ac:new AC(),master:null};
+ audio.master=audio.ac.createGain();audio.master.gain.value=.16;audio.master.connect(audio.ac.destination);
+}
+function tone(freq,dur,pan=0,vol=.15,type='sine'){
+ if(!audio)return;
+ let ac=audio.ac,o=ac.createOscillator(),g=ac.createGain(),sp=ac.createStereoPanner();
+ o.type=type;o.frequency.value=freq;sp.pan.value=clamp(pan,-1,1);
+ g.gain.setValueAtTime(0,ac.currentTime);g.gain.linearRampToValueAtTime(vol,ac.currentTime+.01);g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+dur);
+ o.connect(g);g.connect(sp);sp.connect(audio.master);o.start();o.stop(ac.currentTime+dur+.02);
+}
+let lastTick=0,lastCue=0,lastStep=0;
+function sounds(now){
+ if(!audio)return;
+ if(now-lastTick>1000){lastTick=now;tone(850,.045,0,.055,'square')}
+ if(eyes && now-lastCue>650){
+   lastCue=now;
+   const tx=13.5,ty=13.5;
+   const target=Math.atan2(ty-p.y,tx-p.x);
+   const pan=Math.sin(norm(target-p.a));
+   const dist=Math.hypot(tx-p.x,ty-p.y);
+   tone(420+Math.max(0,12-dist)*30,.16,pan,.10,'sine');
+ }
+}
+function speakName(){
+ if(!('speechSynthesis' in window))return;
+ speechSynthesis.cancel();
+ const u=new SpeechSynthesisUtterance(name);
+ u.lang='fr-FR';u.rate=.72;u.pitch=.55;u.volume=1;
+ speechSynthesis.speak(u);
+}
+function start(){
+ name=(document.getElementById('name').value||'').trim();
+ if(!name){say("Entre ton prénom.");return}
+ initAudio(); if(audio&&audio.ac.state==='suspended')audio.ac.resume();
+ running=true;dead=false;eyes=false;p={x:2.5,y:2.5,a:0};creature={x:12.5,y:13.5};
+ startTime=performance.now();last=startTime;
+ document.getElementById('start').style.display='none';
+ document.getElementById('death').style.display='none';
+ document.getElementById('black').style.display='none';
+ say("Tu es seul. Explore.");
+}
+function die(reason){
+ if(dead)return;dead=true;running=false;eyes=false;
+ document.getElementById('black').style.display='none';
+ document.getElementById('deathText').textContent=reason;
+ document.getElementById('death').style.display='flex';
+ tone(70,.8,0,.35,'sawtooth');
+}
+function toggleEyes(){
+ if(!running||dead)return;
+ eyes=!eyes;
+ document.getElementById('black').style.display=eyes?'block':'none';
+ if(eyes){say("Cours. Écoute le son.");tone(260,.18,0,.18,'sine')}
+ else {say("Tu as rouvert les yeux.");tone(900,.1,0,.1,'sine')}
+}
+document.getElementById('eyes').addEventListener('touchstart',e=>{e.preventDefault();toggleEyes()},{passive:false});
+document.getElementById('eyes').addEventListener('click',toggleEyes);
+document.getElementById('startBtn').onclick=start;
+document.getElementById('restart').onclick=start;
+
+function joyStart(e){e.preventDefault();let t=e.changedTouches[0];joystick.active=true;joystick.id=t.identifier;joyMove(e)}
+function joyMove(e){
+ if(!joystick.active)return;
+ for(const t of e.touches)if(t.identifier===joystick.id){
+  const r=document.getElementById('joystick').getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+  let dx=t.clientX-cx,dy=t.clientY-cy;const max=45,len=Math.hypot(dx,dy)||1;
+  if(len>max){dx=dx/len*max;dy=dy/len*max}
+  joystick.x=dx/max;joystick.y=dy/max;
+ }
+}
+function joyEnd(e){for(const t of e.changedTouches)if(t.identifier===joystick.id){joystick.active=false;joystick.x=joystick.y=0}}
+const j=document.getElementById('joystick');
+j.addEventListener('touchstart',joyStart,{passive:false});j.addEventListener('touchmove',joyMove,{passive:false});j.addEventListener('touchend',joyEnd,{passive:false});j.addEventListener('touchcancel',joyEnd,{passive:false});
+
+canvas.addEventListener('touchstart',e=>{
+ if(!running)return;
+ for(const t of e.changedTouches){if(t.clientX>W*.42){look.active=true;look.id=t.identifier;look.lastX=t.clientX}}
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+ if(!look.active)return;
+ for(const t of e.touches)if(t.identifier===look.id){
+  let dx=t.clientX-look.lastX;look.lastX=t.clientX;p.a+=dx*.012;
+ }
+},{passive:false});
+canvas.addEventListener('touchend',e=>{for(const t of e.changedTouches)if(t.identifier===look.id)look.active=false},{passive:false});
+
+function render(){
+ ctx.fillStyle="#080808";ctx.fillRect(0,0,W,H);
+ // ceiling/floor
+ ctx.fillStyle="#0b0b0b";ctx.fillRect(0,0,W,H/2);
+ ctx.fillStyle="#111";ctx.fillRect(0,H/2,W,H/2);
+ const fov=Math.PI/3,rays=Math.max(100,Math.floor(W/3)),strip=W/rays;
+ for(let i=0;i<rays;i++){
+  const a=p.a-fov/2+fov*(i/rays);
+  let x=p.x,y=p.y,dx=Math.cos(a)*.035,dy=Math.sin(a)*.035,dist=0;
+  while(dist<22&&!wall(x,y)){x+=dx;y+=dy;dist+=.035}
+  dist*=Math.cos(a-p.a);let h=Math.min(H*1.5,H/(dist*.72));
+  let shade=clamp(150-dist*8,18,130);
+  // lamp illumination around player
+  const lightDist=Math.hypot(x-p.x,y-p.y);
+  shade*=clamp(1.25-lightDist*.035,.35,1);
+  ctx.fillStyle=`rgb(${shade*.72},${shade*.68},${shade*.58})`;
+  ctx.fillRect(i*strip,(H-h)/2,strip+1,h);
+ }
+ // subtle lamp glow
+ const g=ctx.createRadialGradient(W*.5,H*.53,10,W*.5,H*.53,Math.min(W,H)*.55);
+ g.addColorStop(0,"rgba(210,175,105,.08)");g.addColorStop(1,"rgba(0,0,0,.35)");
+ ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+ // creature silhouette only if close / eyes open
+ const cd=Math.hypot(creature.x-p.x,creature.y-p.y);
+ if(!eyes && cd<5){
+  const ang=norm(Math.atan2(creature.y-p.y,creature.x-p.x)-p.a);
+  if(Math.abs(ang)<fov*.7){
+   const sx=W/2+Math.tan(ang)/(Math.tan(fov/2))*W/2;
+   const size=clamp(H/(cd*.7),40,H*1.2);
+   ctx.fillStyle=`rgba(0,0,0,${clamp(1-cd/7,.15,.9)})`;
+   ctx.beginPath();ctx.ellipse(sx,H*.52,size*.18,size*.42,0,0,Math.PI*2);ctx.fill();
+   ctx.beginPath();ctx.arc(sx,H*.29,size*.16,0,Math.PI*2);ctx.fill();
+  }
+ }
+ // lamp
+ ctx.fillStyle="#b48b52";ctx.fillRect(W/2-8,H*.57,16,65);
+ ctx.fillStyle="#d5b16b";ctx.beginPath();ctx.arc(W/2,H*.54,24,0,Math.PI*2);ctx.fill();
+}
+function update(dt,now){
+ if(!running)return;
+ const elapsed=(now-startTime)/1000,remain=Math.max(0,duration-elapsed);
+ document.getElementById('timer').textContent=format(remain);
+ let mx=joystick.x,my=joystick.y;
+ let speed=eyes?3.0:1.7;
+ // forward is negative Y joystick
+ let f=-my,s=mx;
+ move((Math.cos(p.a)*f-Math.sin(p.a)*s)*speed*dt,(Math.sin(p.a)*f+Math.cos(p.a)*s)*speed*dt);
+ // scripted events
+ if(elapsed>18 && elapsed<18.08)say("Le silence est bizarre ici.");
+ if(elapsed>35 && elapsed<35.08){say("Tu entends quelque chose...");tone(120,.6,0,.2,'sawtooth')}
+ if(elapsed>55 && elapsed<55.08){speakName();say(name+"...",2600);tone(170,.8,0,.18,'sine')}
+ if(elapsed>58 && elapsed<58.08 && !eyes){die("Tu n'as pas fermé les yeux.");return}
+ // creature begins after name
+ if(elapsed>55){
+  let ang=Math.atan2(p.y-creature.y,p.x-creature.x),sp=eyes?1.9:.75;
+  creature.x+=Math.cos(ang)*sp*dt;creature.y+=Math.sin(ang)*sp*dt;
+  if(Math.hypot(creature.x-p.x,creature.y-p.y)<.7){die("Quelque chose était juste derrière toi.");return}
+ }
+ if(remain<=0){die("Le temps est écoulé.");return}
+ sounds(now);
+}
+function loop(now){
+ const dt=Math.min(.05,(now-last)/1000||0);last=now;
+ update(dt,now);render();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
