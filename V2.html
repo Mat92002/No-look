@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>NO LOOK — Prototype v2</title>
+<style>
+*{box-sizing:border-box;-webkit-user-select:none;user-select:none}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#eee;font-family:Arial,sans-serif;touch-action:none}
+#game{position:fixed;inset:0;width:100%;height:100%;display:block}
+#hud{position:fixed;inset:0;pointer-events:none}
+#timer{position:absolute;top:max(14px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);font-size:18px;letter-spacing:3px;text-shadow:0 2px 8px #000}
+#msg{position:absolute;top:13%;left:50%;transform:translateX(-50%);width:90%;text-align:center;font-size:20px;text-shadow:0 2px 10px #000;opacity:0;transition:opacity .25s}
+#eyes{position:absolute;right:18px;bottom:max(24px,env(safe-area-inset-bottom));width:92px;height:92px;border:1px solid #aaa;border-radius:50%;background:rgba(8,8,8,.82);color:#fff;font-weight:bold;pointer-events:auto;z-index:20}
+#eyes:active{transform:scale(.96)}
+#joystick{position:absolute;left:22px;bottom:max(25px,env(safe-area-inset-bottom));width:140px;height:140px;border:1px solid #777;border-radius:50%;background:rgba(20,20,20,.34);pointer-events:auto;z-index:20}
+#stick{position:absolute;width:56px;height:56px;border-radius:50%;background:rgba(220,220,220,.32);border:1px solid #aaa;left:42px;top:42px;transform:translate(0,0)}
+#lookHint{position:absolute;right:122px;bottom:45px;color:#aaa;font-size:11px;opacity:.6}
+#black{position:fixed;inset:0;background:#000;z-index:10;display:none;pointer-events:none}
+#closedHint{position:fixed;inset:0;display:none;z-index:11;pointer-events:none;align-items:center;justify-content:center;color:#666;font-size:13px;letter-spacing:2px}
+.overlay{position:fixed;inset:0;background:radial-gradient(circle,#151515,#020202 70%);display:flex;align-items:center;justify-content:center;z-index:50;padding:24px}
+.panel{width:min(420px,92vw);text-align:center}
+h1{font-size:42px;letter-spacing:9px;margin:0 0 10px}
+h2{letter-spacing:4px}
+p{color:#aaa;line-height:1.5}
+input{width:100%;padding:15px;border:1px solid #555;background:#111;color:#fff;border-radius:8px;font-size:18px;text-align:center;margin:14px 0}
+button.start{width:100%;padding:15px;border:0;border-radius:8px;background:#ddd;color:#111;font-weight:bold;font-size:16px}
+.small{font-size:12px;color:#666;margin-top:15px}
+#death{display:none}
+#voiceTest{margin-top:12px;background:#222;color:#ddd;border:1px solid #555}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="black"></div>
+<div id="closedHint">ÉCOUTE…</div>
+
+<div id="hud">
+  <div id="timer">10:00</div>
+  <div id="msg"></div>
+  <div id="lookHint">GLISSE À DROITE POUR REGARDER</div>
+  <div id="joystick"><div id="stick"></div></div>
+  <button id="eyes">FERMER<br>LES YEUX</button>
+</div>
+
+<div id="start" class="overlay">
+ <div class="panel">
+  <h1>NO LOOK</h1>
+  <p>Entre ton prénom.<br>La pièce est calme. Pour l'instant.</p>
+  <input id="name" maxlength="18" placeholder="Ton prénom" autocomplete="off">
+  <button class="start" id="startBtn">ENTRER</button>
+  <button class="start" id="voiceTest">TESTER LA VOIX</button>
+  <div class="small">Prototype v2 — contrôles tactiles corrigés</div>
+ </div>
+</div>
+
+<div id="death" class="overlay">
+ <div class="panel">
+  <h2>IL T'A TROUVÉ</h2>
+  <p id="deathText"></p>
+  <button class="start" id="restart">RECOMMENCER</button>
+ </div>
+</div>
+
+<script>
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+let W=innerWidth,H=innerHeight,dpr=Math.min(devicePixelRatio||1,2);
+function resize(){W=innerWidth;H=innerHeight;canvas.width=W*dpr;canvas.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener('resize',resize);resize();
+
+const map=[
+"################",
+"#..............#",
+"#..####........#",
+"#..#..#........#",
+"#..#..#..#####.#",
+"#.....#........#",
+"#..............#",
+"#..####........#",
+"#........#.....#",
+"#........#.....#",
+"#........#.....#",
+"#........#.....#",
+"#..............#",
+"#......#####...#",
+"#..............#",
+"################"
+];
+const MW=16,MH=16;
+let p={x:2.5,y:2.5,a:0}, creature={x:12.5,y:13.5};
+let running=false,dead=false,eyes=false,name="",startTime=0,last=performance.now();
+let duration=600;
+let joystick={active:false,id:null,x:0,y:0};
+let look={active:false,id:null,lastX:0};
+let audio=null,voiceReady=false;
+let eventState={name:false,warning:false,first:false};
+
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function norm(a){while(a>Math.PI)a-=Math.PI*2;while(a<-Math.PI)a+=Math.PI*2;return a}
+function wall(x,y){let xi=Math.floor(x),yi=Math.floor(y);return xi<0||yi<0||xi>=MW||yi>=MH||map[yi][xi]==="#"}
+function move(dx,dy){
+ let nx=p.x+dx,ny=p.y+dy;
+ if(!wall(nx,p.y))p.x=nx;
+ if(!wall(p.x,ny))p.y=ny;
+}
+function say(t,ms=2500){
+ const el=document.getElementById('msg');el.textContent=t;el.style.opacity=1;
+ clearTimeout(say.to);say.to=setTimeout(()=>el.style.opacity=0,ms);
+}
+function format(s){let m=Math.floor(s/60),sec=Math.floor(s%60);return String(m).padStart(2,'0')+":"+String(sec).padStart(2,'0')}
+
+function initAudio(){
+ if(audio){if(audio.ac.state==='suspended')audio.ac.resume();return}
+ const AC=window.AudioContext||window.webkitAudioContext;
+ if(AC){
+  const ac=new AC(),master=ac.createGain();
+  master.gain.value=.10;master.connect(ac.destination);
+  audio={ac,master};
+  if(ac.state==='suspended')ac.resume();
+ }
+ // Prime iOS speech synthesis from the user's tap.
+ if('speechSynthesis' in window){
+  try{
+   speechSynthesis.cancel();
+   const u=new SpeechSynthesisUtterance(" ");
+   u.lang='fr-FR';u.volume=0;u.rate=1;
+   speechSynthesis.speak(u);
+   voiceReady=true;
+  }catch(e){}
+ }
+}
+function getFrenchVoice(){
+ if(!('speechSynthesis' in window))return null;
+ const voices=speechSynthesis.getVoices();
+ return voices.find(v=>/^fr/i.test(v.lang)) || voices.find(v=>/fran[cç]ais/i.test(v.name)) || voices[0] || null;
+}
+function creepyVoice(text){
+ if(!('speechSynthesis' in window))return;
+ try{
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang='fr-FR';u.rate=.66;u.pitch=.48;u.volume=1;
+  const v=getFrenchVoice();if(v)u.voice=v;
+  speechSynthesis.speak(u);
+ }catch(e){}
+}
+function tone(freq,dur,pan=0,vol=.12,type='sine'){
+ if(!audio)return;
+ const ac=audio.ac,o=ac.createOscillator(),g=ac.createGain(),sp=ac.createStereoPanner();
+ o.type=type;o.frequency.value=freq;sp.pan.value=clamp(pan,-1,1);
+ g.gain.setValueAtTime(.001,ac.currentTime);
+ g.gain.linearRampToValueAtTime(vol,ac.currentTime+.02);
+ g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+dur);
+ o.connect(g);g.connect(sp);sp.connect(audio.master);o.start();o.stop(ac.currentTime+dur+.03);
+}
+let lastTick=0,lastCue=0,lastStep=0,lastWhisper=0;
+function sounds(now){
+ if(!audio)return;
+ if(now-lastTick>1000){lastTick=now;tone(780,.035,0,.035,'square')}
+ if(running && now-lastStep>520){
+  const moving=Math.abs(joystick.x)+Math.abs(joystick.y)>.12;
+  if(moving){lastStep=now;tone(115,.045,0,.045,'square');tone(75,.06,0,.025,'sine')}
+ }
+ if(eyes && now-lastCue>700){
+  lastCue=now;
+  const tx=13.5,ty=13.5,target=Math.atan2(ty-p.y,tx-p.x);
+  const pan=Math.sin(norm(target-p.a)),dist=Math.hypot(tx-p.x,ty-p.y);
+  tone(350+Math.max(0,14-dist)*28,.13,pan,.07,'sine');
+ }
+}
+function start(){
+ name=(document.getElementById('name').value||'').trim();
+ if(!name){say("Entre ton prénom.");return}
+ initAudio();
+ running=true;dead=false;eyes=false;eventState={name:false,warning:false,first:false};
+ p={x:2.5,y:2.5,a:0};creature={x:12.5,y:13.5};
+ startTime=performance.now();last=startTime;
+ document.getElementById('start').style.display='none';
+ document.getElementById('death').style.display='none';
+ setEyes(false);
+ say("Tu es seul. Explore.");
+}
+function die(reason){
+ if(dead)return;dead=true;running=false;setEyes(false);
+ document.getElementById('deathText').textContent=reason;
+ document.getElementById('death').style.display='flex';
+ creepyVoice("Je t'ai trouvé.");
+ tone(55,.8,0,.3,'sawtooth');
+}
+function setEyes(v){
+ eyes=v;
+ document.getElementById('black').style.display=v?'block':'none';
+ document.getElementById('closedHint').style.display=v?'flex':'none';
+ document.getElementById('eyes').innerHTML=v?'OUVRIR<br>LES YEUX':'FERMER<br>LES YEUX';
+}
+function toggleEyes(){
+ if(!running||dead)return;
+ setEyes(!eyes);
+ if(eyes){say("Cours. Écoute.");tone(250,.16,0,.12,'sine')}
+ else {say("Tu peux regarder.");tone(850,.08,0,.08,'sine')}
+}
+document.getElementById('eyes').addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();toggleEyes()},{passive:false});
+document.getElementById('eyes').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();if(!e.detail)return;});
+document.getElementById('startBtn').addEventListener('click',start);
+document.getElementById('restart').addEventListener('click',start);
+document.getElementById('voiceTest').addEventListener('click',()=>{initAudio();creepyVoice((document.getElementById('name').value||'ton prénom').trim());});
+
+function updateStick(){
+ const s=document.getElementById('stick');
+ s.style.transform=`translate(${joystick.x*42}px,${joystick.y*42}px)`;
+}
+function joyStart(e){
+ e.preventDefault();e.stopPropagation();
+ const t=e.changedTouches[0];joystick.active=true;joystick.id=t.identifier;joyMove(e);
+}
+function joyMove(e){
+ if(!joystick.active)return;
+ for(const t of e.touches)if(t.identifier===joystick.id){
+  const r=document.getElementById('joystick').getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+  let dx=t.clientX-cx,dy=t.clientY-cy,max=45,len=Math.hypot(dx,dy)||1;
+  if(len>max){dx=dx/len*max;dy=dy/len*max}
+  joystick.x=dx/max;joystick.y=dy/max;updateStick();
+ }
+}
+function joyEnd(e){
+ for(const t of e.changedTouches)if(t.identifier===joystick.id){
+  joystick.active=false;joystick.x=joystick.y=0;updateStick();
+ }
+}
+const j=document.getElementById('joystick');
+j.addEventListener('touchstart',joyStart,{passive:false});
+j.addEventListener('touchmove',joyMove,{passive:false});
+j.addEventListener('touchend',joyEnd,{passive:false});
+j.addEventListener('touchcancel',joyEnd,{passive:false});
+
+canvas.addEventListener('touchstart',e=>{
+ if(!running)return;
+ for(const t of e.changedTouches){
+  if(t.clientX>W*.42 && t.clientY<H*.72){
+   look.active=true;look.id=t.identifier;look.lastX=t.clientX;
+  }
+ }
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+ if(!look.active)return;
+ for(const t of e.touches)if(t.identifier===look.id){
+  let dx=t.clientX-look.lastX;look.lastX=t.clientX;p.a+=dx*.012;
+ }
+},{passive:false});
+canvas.addEventListener('touchend',e=>{for(const t of e.changedTouches)if(t.identifier===look.id)look.active=false},{passive:false});
+canvas.addEventListener('touchcancel',e=>{for(const t of e.changedTouches)if(t.identifier===look.id)look.active=false},{passive:false});
+
+function render(){
+ ctx.fillStyle="#070707";ctx.fillRect(0,0,W,H);
+ ctx.fillStyle="#090909";ctx.fillRect(0,0,W,H/2);
+ ctx.fillStyle="#101010";ctx.fillRect(0,H/2,W,H/2);
+ const fov=Math.PI/3,rays=Math.max(120,Math.floor(W/3)),strip=W/rays;
+ for(let i=0;i<rays;i++){
+  const a=p.a-fov/2+fov*(i/rays);
+  let x=p.x,y=p.y,dx=Math.cos(a)*.035,dy=Math.sin(a)*.035,dist=0;
+  while(dist<22&&!wall(x,y)){x+=dx;y+=dy;dist+=.035}
+  dist*=Math.cos(a-p.a);let h=Math.min(H*1.5,H/(dist*.72));
+  let shade=clamp(155-dist*8,16,125);
+  const ld=Math.hypot(x-p.x,y-p.y);shade*=clamp(1.28-ld*.035,.35,1);
+  ctx.fillStyle=`rgb(${shade*.72},${shade*.68},${shade*.58})`;
+  ctx.fillRect(i*strip,(H-h)/2,strip+1,h);
+ }
+ const g=ctx.createRadialGradient(W*.5,H*.53,10,W*.5,H*.53,Math.min(W,H)*.58);
+ g.addColorStop(0,"rgba(210,175,105,.09)");g.addColorStop(1,"rgba(0,0,0,.42)");
+ ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+ const cd=Math.hypot(creature.x-p.x,creature.y-p.y);
+ if(!eyes && cd<5){
+  const ang=norm(Math.atan2(creature.y-p.y,creature.x-p.x)-p.a);
+  if(Math.abs(ang)<fov*.7){
+   const sx=W/2+Math.tan(ang)/Math.tan(fov/2)*W/2,size=clamp(H/(cd*.7),40,H*1.2);
+   ctx.fillStyle=`rgba(0,0,0,${clamp(1-cd/7,.18,.92)})`;
+   ctx.beginPath();ctx.ellipse(sx,H*.53,size*.18,size*.42,0,0,Math.PI*2);ctx.fill();
+   ctx.beginPath();ctx.arc(sx,H*.30,size*.16,0,Math.PI*2);ctx.fill();
+  }
+ }
+ // old lamp
+ ctx.fillStyle="#a98550";ctx.fillRect(W/2-7,H*.57,14,66);
+ ctx.fillStyle="#d6b46f";ctx.beginPath();ctx.arc(W/2,H*.54,24,0,Math.PI*2);ctx.fill();
+}
+function update(dt,now){
+ if(!running)return;
+ const elapsed=(now-startTime)/1000,remain=Math.max(0,duration-elapsed);
+ document.getElementById('timer').textContent=format(remain);
+ const mx=joystick.x,my=joystick.y,speed=eyes?3.0:1.7;
+ const f=-my,s=mx;
+ move((Math.cos(p.a)*f-Math.sin(p.a)*s)*speed*dt,(Math.sin(p.a)*f+Math.cos(p.a)*s)*speed*dt);
+
+ if(elapsed>18 && !eventState.first){eventState.first=true;say("Le silence est bizarre ici.");tone(90,.45,0,.12,'sine')}
+ if(elapsed>36 && !eventState.warning){eventState.warning=true;say("Tu entends quelque chose derrière toi…");creepyVoice("Derrière toi.");}
+ if(elapsed>55 && !eventState.name){
+  eventState.name=true;say(name+"…",3000);creepyVoice(name);
+ }
+ if(elapsed>59 && eventState.name && !eyes && !dead){
+  die("Tu aurais dû fermer les yeux.");
+  return;
+ }
+ if(elapsed>55){
+  const ang=Math.atan2(p.y-creature.y,p.x-creature.x),sp=eyes?1.95:.72;
+  creature.x+=Math.cos(ang)*sp*dt;creature.y+=Math.sin(ang)*sp*dt;
+  if(Math.hypot(creature.x-p.x,creature.y-p.y)<.7){die("Quelque chose était juste derrière toi.");return}
+ }
+ if(remain<=0){die("Le temps est écoulé.");return}
+ sounds(now);
+}
+function loop(now){
+ const dt=Math.min(.05,(now-last)/1000||0);last=now;
+ update(dt,now);render();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
