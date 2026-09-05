@@ -1,0 +1,9 @@
+{
+  "name": "no-look-prototype",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Prototype mobile d'horreur 3D",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
